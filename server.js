@@ -149,7 +149,7 @@ app.get("/api/offers/:tokenId", async (req, res) => {
   }
 });
 
-// ─── OpenSea proxy: account events (used for bot scoring) ─────────────────────
+// ───  OpenSea proxy: account events (used for bot scoring) ─────────────────────
 // Supports pagination so the frontend can fetch a larger window (e.g. 150
 // events across 3 pages) — needed for rate-based bot scoring where a single
 // 50-event page from a very active wallet only covers a few minutes and
