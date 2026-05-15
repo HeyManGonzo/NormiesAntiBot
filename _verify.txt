@@ -1,0 +1,3 @@
+Build the Type cell. Badge text is always the bare type word
+// ("item" / "collection" / "trait") so the column stays compact and
+// scannable. The hover tooltip explains what that type means in plain

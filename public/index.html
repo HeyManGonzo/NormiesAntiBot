@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Normies Offer Desk</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --panel: #181b22;
+      --panel-2: #1f232c;
+      --border: #2a2f3a;
+      --text: #e6e8ec;
+      --muted: #8b93a7;
+      --accent: #7c5cff;
+      --accent-2: #5b8def;
+      --risk-low: #2ea043;
+      --risk-med: #d29922;
+      --risk-high: #f85149;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 24px;
+    }
+    header { margin-bottom: 24px; }
+    h1 { margin: 0 0 4px 0; font-size: 24px; }
+    .subtitle { color: var(--muted); margin: 0; font-size: 14px; }
+    .controls {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+      background: var(--panel);
+      padding: 16px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      margin-bottom: 16px;
+    }
+    .controls label { font-size: 13px; color: var(--muted); }
+    .controls input {
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 14px;
+      width: 160px;
+    }
+    .controls input:focus { outline: none; border-color: var(--accent); }
+    .controls button {
+      background: var(--accent);
+      color: white;
+      border: none;
+      border-radius: 6px;
+      padding: 8px 16px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .controls button:hover { background: var(--accent-2); }
+    .controls button:disabled { opacity: 0.6; cursor: not-allowed; }
+    #status { font-size: 13px; color: var(--muted); }
+    .status-error { color: var(--risk-high) !important; }
+    .status-success { color: var(--risk-low) !important; }
+    .summary {
+      color: var(--muted);
+      font-size: 13px;
+      margin-bottom: 12px;
+      min-height: 18px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    th, td {
+      text-align: left;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      font-size: 14px;
+    }
+    th { background: var(--panel-2); color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+    tr:last-child td { border-bottom: none; }
+    td.num { font-variant-numeric: tabular-nums; }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .badge-item { background: rgba(124, 92, 255, 0.18); color: #b9a8ff; }
+    .badge-collection { background: rgba(91, 141, 239, 0.18); color: #9ec0ff; }
+    .badge-trait { background: rgba(244, 162, 97, 0.18); color: #f4c692; }
+    /* Subtle "help" cursor on the type badge so the hover tooltip is discoverable */
+    .badge[title] { cursor: help; }
+    .qty { color: var(--muted); font-size: 11px; font-weight: 500; margin-left: 4px; }
+    .risk-low { color: var(--risk-low); font-weight: 600; }
+    .risk-med { color: var(--risk-med); font-weight: 600; }
+    .risk-high { color: var(--risk-high); font-weight: 600; }
+    a { color: var(--accent-2); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .accept {
+      display: inline-block;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      color: var(--text) !important;
+    }
+    .accept:hover { border-color: var(--accent); text-decoration: none; }
+    .footnote { color: var(--muted); font-size: 12px; margin-top: 16px; }
+    .footnote code { background: var(--panel-2); padding: 1px 6px; border-radius: 4px; font-size: 11px; }
+    /* Prominent call-to-action block */
+    .cta {
+      background: linear-gradient(135deg, rgba(124,92,255,0.12), rgba(91,141,239,0.08));
+      border: 1px solid var(--accent);
+      border-radius: 10px;
+      padding: 18px 20px;
+      margin-bottom: 16px;
+    }
+    .cta-button {
+      display: inline-block;
+      background: var(--accent);
+      color: white !important;
+      font-weight: 600;
+      font-size: 15px;
+      padding: 12px 22px;
+      border-radius: 8px;
+      text-decoration: none;
+    }
+    .cta-button:hover { background: var(--accent-2); text-decoration: none; }
+    .cta-note { color: var(--text); font-size: 13px; margin: 12px 0 6px 0; }
+    .cta-steps { color: var(--muted); font-size: 13px; margin: 0; padding-left: 22px; line-height: 1.6; }
+    .cta-steps strong, .cta-steps em { color: var(--text); font-style: normal; }
+    /* Bot-score cell: number + risk label on one line */
+    .bot-score .label { font-weight: 500; font-size: 11px; margin-left: 6px; opacity: 0.85; }
+    /* Maker cell: OpenSea username stacked on top of short address */
+    .maker a { display: inline-block; line-height: 1.2; }
+    .maker-name { display: block; font-weight: 600; color: var(--accent-2); }
+    .maker-addr { display: block; font-size: 11px; color: var(--muted); font-family: monospace; }
+    /* NFT preview card */
+    .nft-card {
+      display: flex;
+      gap: 16px;
+      align-items: center;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px;
+      margin-bottom: 16px;
+    }
+    .nft-card img {
+      width: 96px;
+      height: 96px;
+      border-radius: 8px;
+      object-fit: cover;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+    }
+    .nft-card .nft-name { font-weight: 600; font-size: 16px; }
+    .nft-card .nft-meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+    .nft-card .nft-link { font-size: 12px; margin-top: 6px; display: inline-block; }
+    /* Bot score explainer panel */
+    .score-info {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 16px;
+      margin-top: 20px;
+      font-size: 13px;
+    }
+    .score-info summary {
+      cursor: pointer;
+      font-weight: 600;
+      color: var(--text);
+      list-style: none;
+    }
+    .score-info summary::-webkit-details-marker { display: none; }
+    .score-info summary::before {
+      content: "▶";
+      display: inline-block;
+      margin-right: 8px;
+      font-size: 10px;
+      color: var(--muted);
+      transition: transform 0.15s;
+    }
+    .score-info[open] summary::before { transform: rotate(90deg); }
+    .score-info p, .score-info ul { color: var(--muted); line-height: 1.55; }
+    .score-info ul { padding-left: 18px; margin: 8px 0; }
+    .score-info table {
+      width: 100%;
+      margin: 10px 0;
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    .score-info th, .score-info td {
+      padding: 6px 10px;
+      font-size: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    .score-info th { background: var(--panel-2); }
+    .legend { display: inline-flex; gap: 12px; margin-top: 6px; font-size: 12px; }
+    .legend span { display: inline-flex; align-items: center; gap: 4px; }
+    .legend i {
+      display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+    }
+    .legend .l-low { background: var(--risk-low); }
+    .legend .l-med { background: var(--risk-med); }
+    .legend .l-high { background: var(--risk-high); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Normies Offer Desk</h1>
+    <p class="subtitle">Find the best offer to accept on your Normie — with bot scoring on the top 10 makers.</p>
+  </header>
+
+  <section class="controls">
+    <label for="tokenId">Normie token ID</label>
+    <input type="number" id="tokenId" placeholder="e.g. 1234" min="0" />
+    <button id="fetchBtn">Fetch offers</button>
+    <span id="status"></span>
+  </section>
+
+  <div id="nftCard" class="nft-card" hidden>
+    <img id="nftImage" alt="NFT preview" />
+    <div>
+      <div class="nft-name" id="nftName">—</div>
+      <div class="nft-meta" id="nftMeta">—</div>
+      <a id="nftLink" class="nft-link" target="_blank" rel="noopener">View on OpenSea ↗</a>
+    </div>
+  </div>
+
+  <section id="ctaBlock" class="cta" hidden>
+    <a id="ctaButton" class="cta-button" target="_blank" rel="noopener">
+      Open on OpenSea, then click the Offers tab
+    </a>
+    <p class="cta-note">
+      OpenSea doesn't let us deep-link directly to a specific bid, so accepting an offer is a two-step process:
+    </p>
+    <ol class="cta-steps">
+      <li>Click the button above to open this Normie's item page on OpenSea.</li>
+      <li>On that page, click the <strong>Offers</strong> tab to see all active bids.</li>
+      <li>Find the bid that matches the one you want from the list below (by price + maker address) and click <em>Accept</em> there.</li>
+    </ol>
+  </section>
+
+  <div id="summary" class="summary"></div>
+
+  <table id="offerTable" hidden>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Price</th>
+        <th>Type</th>
+        <th>Maker</th>
+        <th>Normies held</th>
+        <th>Burns</th>
+        <th title="Heuristic 0–100 from OpenSea activity. Lower = more human-like.">Bot score</th>
+      </tr>
+    </thead>
+    <tbody id="offerBody"></tbody>
+  </table>
+
+  <details class="score-info">
+    <summary>About the Bot score — how it's calculated</summary>
+    <p>
+      The score is a heuristic from 0–100 (lower = more human-like) derived from the maker's
+      last ~150 OpenSea bidding events. It's <em>rate-based</em> — we look at how fast and how widely
+      a wallet is bidding, not just how many bids it has placed. Treat it as a yellow flag, not a verdict.
+    </p>
+    <div class="legend">
+      <span><i class="l-low"></i> 0–39 likely human</span>
+      <span><i class="l-med"></i> 40–69 suspicious</span>
+      <span><i class="l-high"></i> 70–100 bot-like</span>
+    </div>
+
+    <p><strong>Signals we weight</strong></p>
+    <table>
+      <thead><tr><th>Signal</th><th>What it measures</th><th>Max points</th></tr></thead>
+      <tbody>
+        <tr><td>Activity rate</td><td>Bidding events per hour across the visible window. &gt;100/hr is essentially automated; &gt;30/hr is hard for a human to sustain.</td><td>+35</td></tr>
+        <tr><td>Inter-event cadence</td><td>Median time between consecutive events. Sub-5-second gaps over many events = scripted; humans pause, read, type.</td><td>+25</td></tr>
+        <tr><td>Collection sprawl per hour</td><td>Unique collections touched per hour. Mass-bidders fire at 10+ unrelated collections per hour — Dan4Play's signature.</td><td>+20</td></tr>
+        <tr><td>Cancel ratio</td><td>Cancels / offers. Bots cancel-and-replace as the floor moves; humans rarely revise more than they place.</td><td>+10</td></tr>
+        <tr><td>No purchases despite heavy bidding</td><td>15+ offers and zero (or &lt;5%) sales = "fishing" wallet hoping for a careless accept rather than collecting.</td><td>+10</td></tr>
+      </tbody>
+    </table>
+
+    <p><strong>General bot fingerprints (industry context)</strong></p>
+    <ul>
+      <li><strong>Short-duration offers/listings</strong> (10–30 min): programmatic bidders use very short expirations so they can react to price moves without leaving open exposure.</li>
+      <li><strong>High cancel-and-replace frequency</strong>: re-pricing every time the floor or top bid moves.</li>
+      <li><strong>Offer-only behavior, no purchases</strong>: the goal is to be the highest bid at the moment an inattentive seller clicks "Accept", not to actually collect.</li>
+      <li><strong>Mass-bidding across unrelated collections</strong>: a single wallet sending collection offers to dozens of unrelated projects.</li>
+      <li><strong>Newly-created wallets</strong> with little history other than offers.</li>
+      <li><strong>Round-number bids just below floor</strong>: heuristic-driven, not collector-driven.</li>
+      <li><strong>No social presence</strong>: no ENS, no profile, no NFTs actually held in wallet.</li>
+    </ul>
+
+    <p><strong>Caveats</strong></p>
+    <ul>
+      <li>We look at the wallet's last ~150 OpenSea events (3 pages of 50). For an extremely active bot this may only cover a few minutes — which is fine, because the rate signal scales with the window automatically.</li>
+      <li><strong>Edge case:</strong> a wallet that is <em>both</em> a real collector and bot-like (e.g. Dan4Play) can still score yellow/red. Use the Normies held / Burns columns as counter-signals — a wallet that holds or has burned Normies is much more likely to be a genuine community member regardless of score.</li>
+      <li><strong>Normies held</strong> = current count of Normies in the wallet (from <code>api.normies.art/holders/&lt;addr&gt;</code>). <strong>Burns</strong> = total Normies the wallet has burned through the Canvas burn-to-edit mechanic (from <code>/history/burns/address/&lt;addr&gt;</code>, summed across commitments). Both serve as counter-signals — a wallet that holds or has burned Normies is much more likely to be a real collector regardless of score.</li>
+      <li>All 10 displayed offers are enriched. Subject to OpenSea's and api.normies.art's rate limits (60 req/min); repeat fetches of the same token reuse cached metadata.</li>
+    </ul>
+  </details>
+
+  <p class="footnote">
+    Showing the top 10 offers ranked by per-unit price. Bulk bids appear as <code>price × quantity</code> and rank by the per-unit value (matching OpenSea's UI).
+  </p>
+
+  <script src="app.js"></script>
+</body>
+</html>

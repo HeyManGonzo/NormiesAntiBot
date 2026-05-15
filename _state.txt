@@ -1,0 +1,7 @@
+.git false
+.env true
+.gitignore true
+README.md false
+check.txt true
+compare-out.txt true
+hidden-offer.txt true
