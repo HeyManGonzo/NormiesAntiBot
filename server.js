@@ -280,6 +280,37 @@ app.get("/api/normies/burns/:address", async (req, res) => {
   }
 });
 
+// ─── ETH/USD spot price (CoinGecko) ───────────────────────────────────────────
+// Used by the frontend to show a dollar value next to each WETH offer.
+// CoinGecko's free tier allows ~30 req/min without a key; we cache aggressively
+// (60s) so a burst of clicks across multiple tokens doesn't hit the rate cap.
+// WETH is 1:1 pegged to ETH so the same rate applies to both.
+let ethPriceCache = { usd: null, fetchedAt: 0 };
+const ETH_PRICE_TTL_MS = 60_000;
+app.get("/api/eth-price", async (_req, res) => {
+  const now = Date.now();
+  if (ethPriceCache.usd && now - ethPriceCache.fetchedAt < ETH_PRICE_TTL_MS) {
+    return res.json(ethPriceCache);
+  }
+  try {
+    const r = await fetch(
+      "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd"
+    );
+    const data = await r.json().catch(() => ({}));
+    const usd = Number(data?.ethereum?.usd);
+    if (!r.ok || !isFinite(usd) || usd <= 0) {
+      // Keep serving the stale value if we have one; better than a hard fail.
+      if (ethPriceCache.usd) return res.json(ethPriceCache);
+      return res.status(502).json({ error: "CoinGecko returned no price" });
+    }
+    ethPriceCache = { usd, fetchedAt: now };
+    res.json(ethPriceCache);
+  } catch (err) {
+    if (ethPriceCache.usd) return res.json(ethPriceCache);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── Start ────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`\n  Normies Offer Desk running at http://localhost:${PORT}`);

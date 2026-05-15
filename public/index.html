@@ -66,6 +66,19 @@
     #status { font-size: 13px; color: var(--muted); }
     .status-error { color: var(--risk-high) !important; }
     .status-success { color: var(--risk-low) !important; }
+    /* Secondary "Refresh" button — same shape as Fetch but de-emphasised so
+       the primary action stays visually dominant. */
+    .refresh-btn {
+      background: var(--panel-2) !important;
+      color: var(--text) !important;
+      border: 1px solid var(--border) !important;
+    }
+    .refresh-btn:hover { border-color: var(--accent) !important; background: var(--panel-2) !important; }
+    /* "Updated 23s ago" indicator next to the refresh button. Colour shifts
+       from muted to red as the data ages so the seller knows when to refresh. */
+    .freshness { font-size: 12px; color: var(--muted); margin-left: 4px; }
+    .freshness.fresh-warn { color: var(--risk-med); }
+    .freshness.fresh-stale { color: var(--risk-high); font-weight: 600; }
     .summary {
       color: var(--muted);
       font-size: 13px;
@@ -103,6 +116,17 @@
     /* Subtle "help" cursor on the type badge so the hover tooltip is discoverable */
     .badge[title] { cursor: help; }
     .qty { color: var(--muted); font-size: 11px; font-weight: 500; margin-left: 4px; }
+    /* Two-line Price cell: WETH on top, USD + delta-from-top on a subdued sub-line */
+    .price-main { line-height: 1.2; }
+    .price-sub { font-size: 11px; margin-top: 2px; line-height: 1.2; }
+    .usd { color: var(--muted); margin-right: 6px; }
+    /* Delta-from-top tag. "top" badge for rank 1, then graded muted→red as
+       offers fall further below the best bid. */
+    .delta { font-variant-numeric: tabular-nums; font-weight: 500; }
+    .delta-top { color: var(--risk-low); font-weight: 600; }
+    .delta-near { color: var(--muted); }
+    .delta-mid { color: var(--risk-med); }
+    .delta-far { color: var(--risk-high); }
     .risk-low { color: var(--risk-low); font-weight: 600; }
     .risk-med { color: var(--risk-med); font-weight: 600; }
     .risk-high { color: var(--risk-high); font-weight: 600; }
@@ -222,13 +246,15 @@
 <body>
   <header>
     <h1>Normies Offer Desk</h1>
-    <p class="subtitle">Find the best offer to accept on your Normie — with bot scoring on the top 10 makers.</p>
+    <p class="subtitle">Sell your Normie to a real collector, not a bot. This tool surfaces the highest bids and flags which ones come from suspicious wallets — so the WETH you accept lands in the hands of someone who actually wants to hold it.</p>
   </header>
 
   <section class="controls">
     <label for="tokenId">Normie token ID</label>
     <input type="number" id="tokenId" placeholder="e.g. 1234" min="0" />
     <button id="fetchBtn">Fetch offers</button>
+    <button id="refreshBtn" class="refresh-btn" hidden title="Re-fetch offers and re-check makers (uses cached enrichment for makers seen in the last 5 minutes)">Refresh</button>
+    <span id="freshness" class="freshness" hidden></span>
     <span id="status"></span>
   </section>
 

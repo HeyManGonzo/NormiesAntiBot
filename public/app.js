@@ -26,6 +26,8 @@ const NFT_PLACEHOLDER =
   );
 
 const fetchBtn = document.getElementById("fetchBtn");
+const refreshBtn = document.getElementById("refreshBtn");
+const freshnessEl = document.getElementById("freshness");
 const tokenIdInput = document.getElementById("tokenId");
 const statusEl = document.getElementById("status");
 const summaryEl = document.getElementById("summary");
@@ -43,29 +45,58 @@ const ctaButtonEl = document.getElementById("ctaButton");
 // resolve an empty src (which renders the broken-icon glyph).
 nftImageEl.src = NFT_PLACEHOLDER;
 
-fetchBtn.addEventListener("click", loadOffers);
+// Track the most recently fetched token so the Refresh button can re-run
+// against the same id without depending on what's currently in the input
+// (the seller may be typing a new id while wanting to re-check the old one).
+let currentTokenId = null;
+let lastFetchedAt = 0;
+let freshnessTimer = null;
+
+// Per-maker enrichment cache. Refreshes typically see the same maker set
+// (a handful of repeat bidders) so reusing recent enrichment cuts ~50 API
+// calls down to ~10 on a typical refresh. 5-minute TTL — bot scores, holds,
+// and burns don't change fast enough to matter on a tighter window.
+const MAKER_CACHE_TTL_MS = 5 * 60 * 1000;
+const makerCache = new Map(); // key: lowercased address → { data, fetchedAt }
+
+fetchBtn.addEventListener("click", () => loadOffers());
+refreshBtn.addEventListener("click", () => loadOffers({ isRefresh: true }));
 tokenIdInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") loadOffers();
 });
 
-async function loadOffers() {
-  const tokenId = tokenIdInput.value.trim();
-  if (!/^\d+$/.test(tokenId)) {
+async function loadOffers(opts = {}) {
+  const isRefresh = !!opts.isRefresh;
+  // On refresh, re-run against the last successfully fetched token rather
+  // than whatever is currently in the input box (the seller may be typing
+  // a new id but still wanting to re-check the previous one).
+  const tokenId = isRefresh
+    ? currentTokenId
+    : tokenIdInput.value.trim();
+  if (!tokenId || !/^\d+$/.test(tokenId)) {
     setStatus("Please enter a valid token ID", "error");
     return;
   }
 
-  setStatus("Fetching offers…", "info");
+  setStatus(isRefresh ? "Refreshing offers…" : "Fetching offers…", "info");
   fetchBtn.disabled = true;
-  tableEl.hidden = true;
-  nftCardEl.hidden = true;
-  ctaBlockEl.hidden = true;
-  bodyEl.innerHTML = "";
-  summaryEl.textContent = "";
+  refreshBtn.disabled = true;
+  if (!isRefresh) {
+    // Full reset only on a fresh fetch — refreshes keep the NFT card and
+    // existing table visible so the page doesn't flash blank.
+    tableEl.hidden = true;
+    nftCardEl.hidden = true;
+    ctaBlockEl.hidden = true;
+    bodyEl.innerHTML = "";
+    summaryEl.textContent = "";
+    // NFT image/name never change for a given token, so skip the re-fetch
+    // on refresh — saves one API call and avoids a brief preview flash.
+    loadNftPreview(tokenId);
+  }
 
-  // Kick off the NFT preview in parallel with offers so the seller can see
-  // the artwork while offers/enrichment load.
-  loadNftPreview(tokenId);
+  // Refresh the ETH/USD rate in parallel so renderRows has it when offers
+  // come back. Non-blocking — if it fails the USD column just shows "—".
+  ensureEthPrice();
 
   // Wire the CTA button to this Normie's OpenSea item page. Shown alongside
   // the offers because OpenSea has no deep link to a specific bid.
@@ -77,6 +108,9 @@ async function loadOffers() {
 
     if (offers.length === 0) {
       setStatus("No offers found for this Normie.", "info");
+      // Still stamp the timestamp so the seller can see when we last checked.
+      currentTokenId = tokenId;
+      markFetched();
       return;
     }
 
@@ -106,12 +140,44 @@ async function loadOffers() {
     await enrichTopMakers(shown);
     setStatus("Done.", "success");
     summaryEl.innerHTML = summaryEl.innerHTML.replace(/· enriching .*$/, "· enrichment complete");
+    currentTokenId = tokenId;
+    markFetched();
   } catch (err) {
     console.error(err);
     setStatus("Error: " + err.message, "error");
   } finally {
     fetchBtn.disabled = false;
+    refreshBtn.disabled = false;
   }
+}
+
+// Called after every successful fetch/refresh. Stamps the time, reveals the
+// Refresh button, and (re)starts the freshness ticker so the seller can see
+// at a glance how stale the displayed offers are.
+function markFetched() {
+  lastFetchedAt = Date.now();
+  refreshBtn.hidden = false;
+  freshnessEl.hidden = false;
+  updateFreshness();
+  if (freshnessTimer) clearInterval(freshnessTimer);
+  freshnessTimer = setInterval(updateFreshness, 1000);
+}
+
+// Render the "Updated Ns ago" label and apply a colour class based on age.
+// Thresholds match the rule of thumb that OpenSea offers can churn within
+// a minute or two during active trading.
+function updateFreshness() {
+  if (!lastFetchedAt) return;
+  const ageMs = Date.now() - lastFetchedAt;
+  const ageSec = Math.floor(ageMs / 1000);
+  let label;
+  if (ageSec < 60) label = `Updated ${ageSec}s ago`;
+  else if (ageSec < 3600) label = `Updated ${Math.floor(ageSec / 60)}m ago`;
+  else label = `Updated ${Math.floor(ageSec / 3600)}h ago`;
+  freshnessEl.textContent = label;
+  freshnessEl.classList.remove("fresh-warn", "fresh-stale");
+  if (ageMs >= 3 * 60 * 1000) freshnessEl.classList.add("fresh-stale");
+  else if (ageMs >= 60 * 1000) freshnessEl.classList.add("fresh-warn");
 }
 
 // Build the Type cell. Badge text is always the bare type word
@@ -139,10 +205,33 @@ function renderTypeCell(offer) {
 
 function renderRows(offers) {
   bodyEl.innerHTML = "";
+  // Per-unit price of the top offer (offers are already sorted desc by the
+  // server), used to compute the percentage below for the rest of the list.
+  const topPerUnit = offers.length
+    ? Number(offers[0].priceWei) / Math.pow(10, offers[0].decimals || 18)
+    : 0;
   offers.forEach((offer, i) => {
     const rank = i + 1;
+    const perUnit = Number(offer.priceWei) / Math.pow(10, offer.decimals || 18);
     const price = formatPrice(offer.priceWei, offer.decimals);
     const qty = offer.quantity > 1 ? ` <span class="qty">× ${offer.quantity}</span>` : "";
+    // USD value of the per-unit price (matches OpenSea's UI which shows USD on
+    // the per-unit, not the total). Falls back to "—" if the rate isn't loaded.
+    const usd = ethUsdPrice ? perUnit * ethUsdPrice : null;
+    const usdCell = usd != null
+      ? `<span class="usd">($${formatUsd(usd)})</span>`
+      : "";
+    // Delta from the top offer. Rank 1 gets "top"; everything else shows the
+    // negative percentage so the seller can see at a glance how far below the
+    // best bid each subsequent offer is.
+    let deltaCell;
+    if (rank === 1 || topPerUnit === 0) {
+      deltaCell = `<span class="delta delta-top">top</span>`;
+    } else {
+      const pct = ((perUnit - topPerUnit) / topPerUnit) * 100;
+      const cls = pct <= -20 ? "delta-far" : pct <= -5 ? "delta-mid" : "delta-near";
+      deltaCell = `<span class="delta ${cls}">${pct.toFixed(1)}%</span>`;
+    }
     const maker = offer.makerAddress || "";
     const makerShort = maker ? `${maker.slice(0, 6)}…${maker.slice(-4)}` : "—";
     const enriched = rank <= ENRICH_TOP_N;
@@ -150,7 +239,10 @@ function renderRows(offers) {
     if (maker) tr.dataset.maker = maker.toLowerCase();
     tr.innerHTML = `
       <td>${rank}</td>
-      <td class="num">${price} ${offer.currency}${qty}</td>
+      <td class="num">
+        <div class="price-main">${price} ${offer.currency}${qty}</div>
+        <div class="price-sub">${usdCell} ${deltaCell}</div>
+      </td>
       <td>${renderTypeCell(offer)}</td>
       <td class="maker">${maker
         ? `<a href="https://opensea.io/${maker}" target="_blank" rel="noopener">
@@ -163,6 +255,31 @@ function renderRows(offers) {
     `;
     bodyEl.appendChild(tr);
   });
+}
+
+// Format a USD value: < $10 keeps 2 decimals, < $1000 keeps 2 decimals with
+// thousands separator, >= $1000 drops to whole dollars to save horizontal space.
+function formatUsd(v) {
+  if (v < 1000) return v.toFixed(2);
+  return Math.round(v).toLocaleString("en-US");
+}
+
+// Module-level ETH/USD rate. Populated by ensureEthPrice() on first fetch and
+// reused for the lifetime of the page; refreshed if older than 5 minutes.
+let ethUsdPrice = null;
+let ethUsdFetchedAt = 0;
+const ETH_PRICE_STALE_MS = 5 * 60 * 1000;
+async function ensureEthPrice() {
+  if (ethUsdPrice && Date.now() - ethUsdFetchedAt < ETH_PRICE_STALE_MS) return;
+  try {
+    const data = await fetchJson("/api/eth-price");
+    if (data && Number(data.usd) > 0) {
+      ethUsdPrice = Number(data.usd);
+      ethUsdFetchedAt = Date.now();
+    }
+  } catch (err) {
+    console.warn("ETH price fetch failed:", err.message);
+  }
 }
 
 // Map a 0–100 score to a short risk label that mirrors the legend in the
@@ -230,6 +347,15 @@ async function enrichTopMakers(offers) {
 }
 
 async function enrichMaker(address) {
+  const key = address.toLowerCase();
+  // Reuse a recent enrichment if we have one — typical refresh hits the
+  // same makers so this avoids re-running ~5 API calls per maker.
+  const cached = makerCache.get(key);
+  if (cached && Date.now() - cached.fetchedAt < MAKER_CACHE_TTL_MS) {
+    applyMakerEnrichment(address, cached.data);
+    return;
+  }
+
   const [events, holders, burns, account] = await Promise.allSettled([
     // 3 pages × 50 events = up to 150 events. Needed so rate-based signals
     // (events/hour, median gap) have a meaningful sample on highly active
@@ -250,8 +376,18 @@ async function enrichMaker(address) {
     ? (burns.value.tokensBurned ?? burns.value.count)
     : null;
   const username = account.status === "fulfilled" ? account.value.username : null;
-  const shortAddr = `${address.slice(0, 6)}…${address.slice(-4)}`;
 
+  const data = { score, holdsCount, burnsCount, username };
+  makerCache.set(key, { data, fetchedAt: Date.now() });
+  applyMakerEnrichment(address, data);
+}
+
+// Apply previously-fetched enrichment data to every row matching this maker.
+// Split out from enrichMaker so cached entries can re-paint freshly-rendered
+// rows on refresh without re-running the network calls.
+function applyMakerEnrichment(address, data) {
+  const { score, holdsCount, burnsCount, username } = data;
+  const shortAddr = `${address.slice(0, 6)}…${address.slice(-4)}`;
   const rows = document.querySelectorAll(`tr[data-maker="${address.toLowerCase()}"]`);
   rows.forEach((row) => {
     row.querySelector(".holds").textContent = holdsCount ?? "?";
@@ -268,6 +404,9 @@ async function enrichMaker(address) {
       }
     }
     const cell = row.querySelector(".bot-score");
+    // Clear any stale risk class from a previous render before applying the
+    // new one (cache replay onto a fresh row starts clean, but belt-and-braces).
+    cell.classList.remove("risk-low", "risk-med", "risk-high");
     if (score === null) {
       cell.textContent = "?";
     } else {
