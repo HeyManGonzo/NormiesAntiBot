@@ -421,6 +421,14 @@ if (require.main === module) {
   });
 }
 
-// Exported for the test suite. Internal-only; the Express routes remain the
-// public API for everything else.
-module.exports = { normalizeOffer, normalizeListing, criteriaMatches };
+// Default export is the Express `app` itself — Vercel's Node.js runtime
+// invokes the file's module.exports as `(req, res) => …` for every request,
+// and the Express app object is already a function with that signature.
+// Exporting a bare `{…}` object (the previous shape) makes Vercel reject the
+// deployment with "The default export must be a function or server."
+// The test-only helpers are attached as properties so existing
+// `const { normalizeOffer } = require("../server")` destructures still work.
+module.exports = app;
+module.exports.normalizeOffer = normalizeOffer;
+module.exports.normalizeListing = normalizeListing;
+module.exports.criteriaMatches = criteriaMatches;
