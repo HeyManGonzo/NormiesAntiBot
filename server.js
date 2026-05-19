@@ -74,6 +74,16 @@ function normalizeOffer(o) {
   const totalWei = BigInt(price.value || params.offer?.[0]?.startAmount || "0");
   const qty = BigInt(params.consideration?.[0]?.startAmount || "1");
   const perUnitWei = qty > 0n ? totalWei / qty : totalWei;
+  // Offer lifetime — endTime - startTime. Programmatic bidders frequently use
+  // very short expirations (10–30 min) so they can re-price as the floor moves
+  // without leaving long open exposure; humans accept OpenSea's defaults
+  // (typically 7d/30d). We expose this so the frontend can show it as a
+  // column and add a small per-row bonus to the bot score for sub-hour offers.
+  const startTime = Number(params.startTime) || 0;
+  const endTime = Number(params.endTime) || 0;
+  const durationSec = startTime && endTime && endTime > startTime
+    ? endTime - startTime
+    : 0;
   return {
     orderHash: o.order_hash,
     type,
@@ -82,11 +92,44 @@ function normalizeOffer(o) {
     quantity: Number(qty),
     currency: price.currency || "WETH",
     decimals: price.decimals ?? 18,
-    endTime: Number(params.endTime) || 0,
+    startTime,
+    endTime,
+    durationSec,
     makerAddress: (params.offerer || o.maker?.address || "").toLowerCase() || null,
     traitType: criteria.trait?.type ?? null,
     traitValue: criteria.trait?.value ?? null,
     encodedTokenIds: encoded ?? null,
+  };
+}
+
+// ─── Listing normalizer ───────────────────────────────────────────────────────
+// OpenSea v2 listing shape mirrors the offer shape but inverted:
+//   protocol_data.parameters.offer[0]            → the NFT being sold (tokenId)
+//   protocol_data.parameters.consideration[0]    → the payment item (price)
+//   protocol_data.parameters.offerer             → the seller's address
+// `price.value` here is the total price for the listing; ERC-721 listings are
+// always quantity 1 so per-unit math collapses to the same number.
+function normalizeListing(l) {
+  const price = l.price?.current || l.price || {};
+  const params = l.protocol_data?.parameters || {};
+  const offerItem = params.offer?.[0] || {};
+  const tokenId = offerItem.identifierOrCriteria || null;
+  const priceWei = String(price.value || params.consideration?.[0]?.startAmount || "0");
+  const startTime = Number(params.startTime) || 0;
+  const endTime = Number(params.endTime) || 0;
+  const durationSec = startTime && endTime && endTime > startTime
+    ? endTime - startTime
+    : 0;
+  return {
+    orderHash: l.order_hash,
+    tokenId: tokenId ? String(tokenId) : null,
+    priceWei,
+    currency: price.currency || "ETH",
+    decimals: price.decimals ?? 18,
+    startTime,
+    endTime,
+    durationSec,
+    makerAddress: (params.offerer || l.maker?.address || "").toLowerCase() || null,
   };
 }
 
@@ -232,27 +275,28 @@ app.get("/api/normies/holders/:address", async (req, res) => {
 // ─── OpenSea proxy: NFT metadata (image + name) for the preview card ──────────
 // Cached in-process; OpenSea's image_url is the IPFS-resolved canonical URL,
 // display_image_url is OpenSea's CDN-rendered version (better for browsers).
+async function getNftMeta(tokenId) {
+  if (nftMetaCache.has(tokenId)) return nftMetaCache.get(tokenId);
+  const data = await osGet(
+    `/chain/ethereum/contract/${NORMIES_CONTRACT}/nfts/${tokenId}`
+  );
+  const n = data.nft || {};
+  const out = {
+    tokenId,
+    name: n.name || `Normie #${tokenId}`,
+    image: n.display_image_url || n.image_url || null,
+    openseaUrl: n.opensea_url || `https://opensea.io/item/ethereum/${NORMIES_CONTRACT}/${tokenId}`,
+  };
+  nftMetaCache.set(tokenId, out);
+  return out;
+}
 app.get("/api/nft/:tokenId", async (req, res) => {
   const { tokenId } = req.params;
   if (!/^\d+$/.test(tokenId)) {
     return res.status(400).json({ error: "Token ID must be a number" });
   }
-  if (nftMetaCache.has(tokenId)) {
-    return res.json(nftMetaCache.get(tokenId));
-  }
   try {
-    const data = await osGet(
-      `/chain/ethereum/contract/${NORMIES_CONTRACT}/nfts/${tokenId}`
-    );
-    const n = data.nft || {};
-    const out = {
-      tokenId,
-      name: n.name || `Normie #${tokenId}`,
-      image: n.display_image_url || n.image_url || null,
-      openseaUrl: n.opensea_url || `https://opensea.io/item/ethereum/${NORMIES_CONTRACT}/${tokenId}`,
-    };
-    nftMetaCache.set(tokenId, out);
-    res.json(out);
+    res.json(await getNftMeta(tokenId));
   } catch (err) {
     console.error("NFT meta error:", err.message);
     res.status(500).json({ error: err.message });
@@ -311,12 +355,72 @@ app.get("/api/eth-price", async (_req, res) => {
   }
 });
 
-// ─── Start ────────────────────────────────────────────────────────────────────
-app.listen(PORT, () => {
-  console.log(`\n  Normies Offer Desk running at http://localhost:${PORT}`);
-  if (!OPENSEA_API_KEY) {
-    console.warn("  ⚠  OPENSEA_API_KEY is not set — add it to your .env file\n");
-  } else {
-    console.log("  ✓  OpenSea API key loaded\n");
+// ─── OpenSea proxy: floor listings (10 cheapest active) ───────────────────────
+// Powers the "Floor Health" panel — fetches the cheapest listings for the
+// Normies collection so the same bot-scoring logic can be applied to the
+// sellers, not just the bidders. OpenSea's /best endpoint is NOT deduplicated
+// by token id (one token with three listings appears three times) so we over-
+// fetch and dedupe to guarantee 10 unique tokens. Cached 60s — the floor
+// doesn't churn every second and this is a user-initiated panel, not auto-polled.
+let floorCache = { data: null, fetchedAt: 0 };
+const FLOOR_TTL_MS = 60_000;
+app.get("/api/floor", async (_req, res) => {
+  const now = Date.now();
+  if (floorCache.data && now - floorCache.fetchedAt < FLOOR_TTL_MS) {
+    return res.json(floorCache.data);
+  }
+  try {
+    const data = await osGet(`/listings/collection/${NORMIES_SLUG}/best?limit=30`);
+    const raw = data.listings || [];
+    const tsNow = Math.floor(Date.now() / 1000);
+    const normalized = raw.map(normalizeListing).filter(
+      (l) => l.tokenId && l.endTime > tsNow
+    );
+    // Dedupe by tokenId, keep the cheapest listing per token (the array is
+    // already sorted by price ascending so the first occurrence wins).
+    const seen = new Set();
+    const unique = [];
+    for (const l of normalized) {
+      if (seen.has(l.tokenId)) continue;
+      seen.add(l.tokenId);
+      unique.push(l);
+      if (unique.length >= 10) break;
+    }
+    // Enrich each listing with the NFT image/name so the floor table can show
+    // a thumbnail per row. Fetched in parallel via the shared nftMetaCache so
+    // repeat calls within the cache lifetime cost nothing. Failures are non-
+    // fatal — a row without an image just falls back to the placeholder.
+    await Promise.all(unique.map(async (l) => {
+      try {
+        const meta = await getNftMeta(l.tokenId);
+        l.image = meta.image;
+        l.name = meta.name;
+      } catch (_) { /* leave image/name undefined; frontend handles fallback */ }
+    }));
+    const out = { listings: unique, fetchedAt: now };
+    floorCache = { data: out, fetchedAt: now };
+    res.json(out);
+  } catch (err) {
+    if (floorCache.data) return res.json(floorCache.data);
+    res.status(500).json({ error: err.message });
   }
 });
+
+// ─── Start ────────────────────────────────────────────────────────────────────
+// Only listen when run directly (`node server.js`). When require()'d from the
+// test suite we just want to load the module to access the pure helpers
+// exported below — starting a real listener would bind a port and leak it.
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`\n  Normies Offer Desk running at http://localhost:${PORT}`);
+    if (!OPENSEA_API_KEY) {
+      console.warn("  ⚠  OPENSEA_API_KEY is not set — add it to your .env file\n");
+    } else {
+      console.log("  ✓  OpenSea API key loaded\n");
+    }
+  });
+}
+
+// Exported for the test suite. Internal-only; the Express routes remain the
+// public API for everything else.
+module.exports = { normalizeOffer, normalizeListing, criteriaMatches };

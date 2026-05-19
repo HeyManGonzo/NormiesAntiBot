@@ -8,6 +8,11 @@ const DISPLAY_TOP_N = 10;
 const ENRICH_TOP_N = DISPLAY_TOP_N;
 const NORMIES_CONTRACT = "0x9eb6e2025b64f340691e424b7fe7022ffde12438";
 
+// Pure scoring/ranking helpers live in scoring.js (loaded just before this
+// file in index.html) so the same logic can be unit-tested under Node without
+// dragging in DOM globals. See public/scoring.js + tests/scoring.test.js.
+const { offerDurationPoints, computeBotScore, compareOffersBySafety, findConcentratedListers } = window.NormiesScoring;
+
 // Inline SVG used when an NFT has no image_url or the image fails to load.
 // Encoded as a data URI so it works offline and never 404s. Matches the
 // dark panel palette so the card still looks intentional rather than broken.
@@ -40,10 +45,41 @@ const nftMetaEl = document.getElementById("nftMeta");
 const nftLinkEl = document.getElementById("nftLink");
 const ctaBlockEl = document.getElementById("ctaBlock");
 const ctaButtonEl = document.getElementById("ctaButton");
+const sortModeEl = document.getElementById("sortMode");
+const hideBotsEl = document.getElementById("hideBots");
+const floorBtn = document.getElementById("floorBtn");
+const floorStatusEl = document.getElementById("floorStatus");
+const floorBannerEl = document.getElementById("floorBanner");
+const floorTableEl = document.getElementById("floorTable");
+const floorBodyEl = document.getElementById("floorBody");
+const floorEmptyEl = document.getElementById("floorEmpty");
 
 // Prime the preview img with the placeholder so the browser never has to
 // resolve an empty src (which renders the broken-icon glyph).
 nftImageEl.src = NFT_PLACEHOLDER;
+
+// Persist whether each "primed" CTA has been used in this browser, so a
+// returning user sees the calm default style instead of being re-prompted to
+// do something they already know how to do. Keys live under a "normies:"
+// prefix so they don't collide with other apps running on localhost.
+const FETCH_DEMOTED_KEY = "normies:fetchDemoted";
+const FLOOR_DEMOTED_KEY = "normies:floorDemoted";
+// Restore demoted state synchronously on boot — before any user-visible
+// interaction — so the button never flashes its pulsing state and then
+// snaps to grey. NormiesUi.demoteCta is idempotent, so it's safe even on a
+// freshly-loaded button that doesn't have the primed class yet.
+if (NormiesUi.readDemoted(window.localStorage, FETCH_DEMOTED_KEY)) {
+  NormiesUi.demoteCta(fetchBtn, { primedClass: "fetch-cta" });
+}
+if (NormiesUi.readDemoted(window.localStorage, FLOOR_DEMOTED_KEY)) {
+  NormiesUi.demoteCta(floorBtn, {
+    primedClass: "floor-cta",
+    demotedClass: "refresh-btn",
+    text: "Refresh",
+    title: "Re-fetch the 10 cheapest listings (cached for 60s on the server).",
+    hideEl: floorEmptyEl,
+  });
+}
 
 // Track the most recently fetched token so the Refresh button can re-run
 // against the same id without depending on what's currently in the input
@@ -59,10 +95,37 @@ let freshnessTimer = null;
 const MAKER_CACHE_TTL_MS = 5 * 60 * 1000;
 const makerCache = new Map(); // key: lowercased address → { data, fetchedAt }
 
+// View state for the offers table. `allOffers` is the full server response
+// (top-N after slicing); `applyViewState` derives what's actually rendered
+// based on the sort dropdown and the "hide bots" checkbox. Promoted to
+// module scope so the change handlers and the enrichment finisher can both
+// trigger a re-render without re-hitting the network.
+const state = { allOffers: [] };
+
 fetchBtn.addEventListener("click", () => loadOffers());
 refreshBtn.addEventListener("click", () => loadOffers({ isRefresh: true }));
 tokenIdInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") loadOffers();
+});
+sortModeEl.addEventListener("change", applyViewState);
+hideBotsEl.addEventListener("change", applyViewState);
+floorBtn.addEventListener("click", () => loadFloor());
+
+// Theme toggle — the initial theme is applied by the inline <head> script
+// before paint to avoid a flash; this just handles user-driven flips and
+// persists the choice. Glyph mirrors the *current* theme (sun in light mode,
+// moon in dark) rather than the destination, which matches macOS / Windows.
+const themeToggle = document.getElementById("themeToggle");
+function syncThemeToggle() {
+  const theme = document.documentElement.dataset.theme || "dark";
+  themeToggle.textContent = theme === "light" ? "☀" : "☾";
+}
+syncThemeToggle();
+themeToggle.addEventListener("click", () => {
+  const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem("theme", next); } catch (_) { /* ignore */ }
+  syncThemeToggle();
 });
 
 async function loadOffers(opts = {}) {
@@ -132,12 +195,21 @@ async function loadOffers(opts = {}) {
       `· ${c.item || 0} item · ${c.collection || 0} collection · ${c.trait || 0} trait` +
       `${dropNote}${moreNote} · enriching top ${enrichCount} makers…`;
 
-    renderRows(shown);
+    // Stash the full top-N for re-rendering when the sort/filter controls
+    // change. Render once now via applyViewState so the initial paint already
+    // honours the current dropdown/checkbox state (e.g. if the user toggled
+    // "Hide bot-like" before clicking Fetch).
+    state.allOffers = shown;
+    applyViewState();
     tableEl.hidden = false;
     ctaBlockEl.hidden = false;
     setStatus("", "info");
 
     await enrichTopMakers(shown);
+    // Re-render once enrichment is in so "Safest first" / "Hide bot-like"
+    // reflect the scores we just learned. applyViewState re-paints from
+    // the maker cache so no extra network calls happen.
+    applyViewState();
     setStatus("Done.", "success");
     summaryEl.innerHTML = summaryEl.innerHTML.replace(/· enriching .*$/, "· enrichment complete");
     currentTokenId = tokenId;
@@ -152,12 +224,14 @@ async function loadOffers(opts = {}) {
 }
 
 // Called after every successful fetch/refresh. Stamps the time, reveals the
-// Refresh button, and (re)starts the freshness ticker so the seller can see
-// at a glance how stale the displayed offers are.
+// Refresh button, demotes the primed Fetch CTA (the user has now discovered
+// the action — no need to keep pulsing), and (re)starts the freshness ticker
+// so the seller can see at a glance how stale the displayed offers are.
 function markFetched() {
   lastFetchedAt = Date.now();
   refreshBtn.hidden = false;
   freshnessEl.hidden = false;
+  demoteFetchCta();
   updateFreshness();
   if (freshnessTimer) clearInterval(freshnessTimer);
   freshnessTimer = setInterval(updateFreshness, 1000);
@@ -203,6 +277,39 @@ function renderTypeCell(offer) {
   return `<span class="badge badge-${t}" title="${escapeHtml(title)}">${t}</span>`;
 }
 
+// Derive the currently-visible offer list from state.allOffers using the
+// sort/filter controls, render it, and re-paint enrichment from the maker
+// cache so previously-fetched scores/holds/burns survive the re-render.
+// Called on every control change and once after enrichment completes.
+function applyViewState() {
+  if (!state.allOffers.length) return;
+  let visible = state.allOffers.slice();
+  // Filter: hide rows whose adjusted score is ≥70. Rows that haven't been
+  // scored yet (still loading) are treated as "not bot" so they stay
+  // visible — better to leave a maybe-bot in than to hide a possibly-good bid.
+  if (hideBotsEl.checked) {
+    visible = visible.filter(
+      (o) => !(typeof o._adjustedScore === "number" && o._adjustedScore >= 70)
+    );
+  }
+  // Sort: default mirrors the server's price-desc ordering; "safest" sorts
+  // adjusted score ascending with price desc as tiebreak so high human bids
+  // beat low human bids when both score the same.
+  if (sortModeEl.value === "safest") visible.sort(compareOffersBySafety);
+  renderRows(visible);
+  // Repaint enrichment cells from cache without re-hitting the network.
+  const seen = new Set();
+  for (const o of visible) {
+    const addr = o.makerAddress;
+    if (!addr) continue;
+    const key = addr.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const cached = makerCache.get(key);
+    if (cached) applyMakerEnrichment(addr, cached.data);
+  }
+}
+
 function renderRows(offers) {
   bodyEl.innerHTML = "";
   // Per-unit price of the top offer (offers are already sorted desc by the
@@ -235,8 +342,11 @@ function renderRows(offers) {
     const maker = offer.makerAddress || "";
     const makerShort = maker ? `${maker.slice(0, 6)}…${maker.slice(-4)}` : "—";
     const enriched = rank <= ENRICH_TOP_N;
+    const durSec = Number(offer.durationSec) || 0;
+    const durCell = `<span class="dur ${durationClass(durSec)}" title="${escapeHtml(durationTitle(durSec))}">${formatDuration(durSec)}</span>`;
     const tr = document.createElement("tr");
     if (maker) tr.dataset.maker = maker.toLowerCase();
+    if (durSec) tr.dataset.durationSec = String(durSec);
     tr.innerHTML = `
       <td>${rank}</td>
       <td class="num">
@@ -244,6 +354,7 @@ function renderRows(offers) {
         <div class="price-sub">${usdCell} ${deltaCell}</div>
       </td>
       <td>${renderTypeCell(offer)}</td>
+      <td class="duration">${durCell}</td>
       <td class="maker">${maker
         ? `<a href="https://opensea.io/${maker}" target="_blank" rel="noopener">
              <span class="maker-name">${makerShort}</span>
@@ -256,6 +367,32 @@ function renderRows(offers) {
     bodyEl.appendChild(tr);
   });
 }
+
+// ─── Offer-duration helpers ───────────────────────────────────────────────────
+// Lifetime of a single offer (endTime - startTime). Surfaced as its own column
+// and folded into the per-row bot score: sub-hour expirations are the textbook
+// "bot fingerprint" — they re-price as the floor moves rather than leaving
+// long open exposure. Humans almost always take OpenSea's 7d/30d defaults.
+function formatDuration(sec) {
+  if (!sec || sec <= 0) return "—";
+  if (sec < 60) return `${Math.round(sec)}s`;
+  if (sec < 3600) return `${Math.round(sec / 60)}m`;
+  if (sec < 86400) return `${Math.round(sec / 3600)}h`;
+  return `${Math.round(sec / 86400)}d`;
+}
+function durationClass(sec) {
+  if (!sec) return "";
+  if (sec < 3600) return "dur-short";   // <1h — bot-like
+  if (sec < 86400) return "dur-mid";    // 1h–24h — unusual
+  return "dur-long";                    // ≥24h — typical human
+}
+function durationTitle(sec) {
+  if (!sec) return "Offer expiration unknown.";
+  if (sec < 3600) return "Very short expiry (<1h) — common bot fingerprint, re-priced as the floor moves.";
+  if (sec < 86400) return "Short expiry (<24h) — unusual for human bidders who typically use OpenSea's 7d/30d defaults.";
+  return "Typical OpenSea default expiry.";
+}
+// offerDurationPoints lives in scoring.js — destructured at the top of this file.
 
 // Format a USD value: < $10 keeps 2 decimals, < $1000 keeps 2 decimals with
 // thousands separator, >= $1000 drops to whole dollars to save horizontal space.
@@ -366,7 +503,11 @@ async function enrichMaker(address) {
     fetchJson(`/api/opensea/account/${address}`),
   ]);
 
-  const score = events.status === "fulfilled" ? computeBotScore(events.value) : null;
+  // computeBotScore now returns { score, breakdown } so we can render a
+  // per-signal mini bar. null when the events call itself failed.
+  const result = events.status === "fulfilled" ? computeBotScore(events.value) : null;
+  const score = result ? result.score : null;
+  const breakdown = result ? result.breakdown : null;
   // Server normalises both endpoints to a `.count` field (see server.js).
   const holdsCount = holders.status === "fulfilled" ? holders.value.count : null;
   // For burns we prefer "tokens burned" over "commit count" since one
@@ -377,18 +518,67 @@ async function enrichMaker(address) {
     : null;
   const username = account.status === "fulfilled" ? account.value.username : null;
 
-  const data = { score, holdsCount, burnsCount, username };
+  const data = { score, breakdown, holdsCount, burnsCount, username };
   makerCache.set(key, { data, fetchedAt: Date.now() });
   applyMakerEnrichment(address, data);
 }
 
+// ─── Mini score-breakdown bar ─────────────────────────────────────────────────
+// Inline visualisation of which signals contributed to the bot score, so the
+// seller doesn't have to guess why e.g. Dan4play scores 70 despite holding
+// Normies. Each segment's width is proportional to its max possible points;
+// the inner fill shows how much of that max was scored, coloured green→red.
+const SIGNAL_DEFS = [
+  { key: "rate",       max: 35, label: "Activity rate" },
+  { key: "cadence",    max: 25, label: "Cadence" },
+  { key: "sprawl",     max: 20, label: "Collection sprawl" },
+  { key: "cancel",     max: 10, label: "Cancel ratio" },
+  { key: "buyThrough", max: 10, label: "No purchases" },
+  { key: "duration",   max: 10, label: "Short expiry (this bid)" },
+];
+const SIGNAL_TOTAL = SIGNAL_DEFS.reduce((s, d) => s + d.max, 0); // 110
+
+function renderScoreBar(breakdown, durationPoints) {
+  const vals = { ...(breakdown || {}), duration: durationPoints || 0 };
+  const tipParts = SIGNAL_DEFS.map(s => `${s.label}: ${vals[s.key] || 0}/${s.max}`);
+  const segs = SIGNAL_DEFS.map(s => {
+    const pts = vals[s.key] || 0;
+    const segWidth = (s.max / SIGNAL_TOTAL) * 100;
+    const ratio = Math.max(0, Math.min(pts / s.max, 1));
+    const fillPct = ratio * 100;
+    // 120° hue (green) at 0 fill → 0° (red) at full. Empty fills stay transparent
+    // and the segment shows just its dark background, so unfired signals are
+    // visibly distinguishable from low-fired ones.
+    const hue = Math.round(120 - 120 * ratio);
+    const color = pts > 0 ? `hsl(${hue}, 65%, 50%)` : "transparent";
+    return `<div class="seg" style="width:${segWidth.toFixed(2)}%" title="${escapeHtml(s.label)}: ${pts}/${s.max}">` +
+           `<div class="seg-fill" style="width:${fillPct.toFixed(2)}%;background:${color}"></div>` +
+           `</div>`;
+  }).join("");
+  return `<div class="score-bar" title="${escapeHtml(tipParts.join("\n"))}">${segs}</div>`;
+}
+
 // Apply previously-fetched enrichment data to every row matching this maker.
 // Split out from enrichMaker so cached entries can re-paint freshly-rendered
-// rows on refresh without re-running the network calls.
+// rows on refresh without re-running the network calls. Also stamps the
+// adjusted (maker + duration) score onto matching offer objects in
+// state.allOffers so the sort/filter controls have something to read.
 function applyMakerEnrichment(address, data) {
-  const { score, holdsCount, burnsCount, username } = data;
+  const { score, breakdown, holdsCount, burnsCount, username } = data;
   const shortAddr = `${address.slice(0, 6)}…${address.slice(-4)}`;
-  const rows = document.querySelectorAll(`tr[data-maker="${address.toLowerCase()}"]`);
+  const keyAddr = address.toLowerCase();
+  // Stash the adjusted score on every matching offer in state so sort/filter
+  // can read it. The same maker can appear on multiple offers with different
+  // durations, so each gets its own per-row score.
+  if (score !== null && score !== undefined) {
+    for (const o of state.allOffers) {
+      if (o.makerAddress && o.makerAddress.toLowerCase() === keyAddr) {
+        const durPts = offerDurationPoints(Number(o.durationSec) || 0);
+        o._adjustedScore = Math.min(score + durPts, 100);
+      }
+    }
+  }
+  const rows = document.querySelectorAll(`tr[data-maker="${keyAddr}"]`);
   rows.forEach((row) => {
     row.querySelector(".holds").textContent = holdsCount ?? "?";
     row.querySelector(".burns").textContent = burnsCount ?? "?";
@@ -410,8 +600,16 @@ function applyMakerEnrichment(address, data) {
     if (score === null) {
       cell.textContent = "?";
     } else {
-      const cls = score >= 70 ? "risk-high" : score >= 40 ? "risk-med" : "risk-low";
-      cell.innerHTML = `${score} <span class="label">${riskLabel(score)}</span>`;
+      // Per-row score = per-maker rate score + this row's offer-duration bonus.
+      // Same maker can show slightly different scores on different rows if
+      // their bids have different expirations — which is the point.
+      const durSec = Number(row.dataset.durationSec) || 0;
+      const durPts = offerDurationPoints(durSec);
+      const rowScore = Math.min(score + durPts, 100);
+      const cls = rowScore >= 70 ? "risk-high" : rowScore >= 40 ? "risk-med" : "risk-low";
+      cell.innerHTML =
+        `<div class="score-head">${rowScore} <span class="label">${riskLabel(rowScore)}</span></div>` +
+        renderScoreBar(breakdown, durPts);
       cell.classList.add(cls);
     }
   });
@@ -435,121 +633,151 @@ async function fetchJson(url) {
   return data;
 }
 
-// Heuristic bot score (0–100). Higher = more bot-like.
-//
-// The previous version was purely count-based, which under-scores wallets
-// like "Dan4Play" that fire offers across many collections every few
-// seconds: in a 50-event sample they look indistinguishable from a busy
-// collector. The rewrite is rate-based — we measure events *per hour*,
-// inter-event gaps, and how many distinct collections are touched in
-// that window. Sub-minute cadence across multiple collections is the
-// fingerprint we actually want to catch.
-//
-// Signals (max points in parentheses):
-//   • Activity rate              (35) — order-related events per hour
-//   • Inter-event cadence        (25) — median seconds between consecutive events
-//   • Collection sprawl per hour (20) — unique collections / hour
-//   • Cancel ratio               (10) — cancels / offers
-//   • No purchases despite       (10) — buy-through gap
-//     heavy bidding
-function computeBotScore(eventsPayload) {
-  const events =
-    eventsPayload.asset_events ||
-    eventsPayload.events ||
-    (Array.isArray(eventsPayload) ? eventsPayload : []);
-
-  let offerCount = 0;
-  let cancelCount = 0;
-  let saleCount = 0;
-  const collections = new Set();
-  const timestamps = []; // ms, only for order/offer/cancel events
-
-  for (const e of events) {
-    const type = (e.event_type || e.type || "").toLowerCase();
-    const slug =
-      e.nft?.collection ||
-      e.asset?.collection?.slug ||
-      e.collection ||
-      e.collection_slug;
-
-    const isOffer = type === "order" || type === "offer" || type === "order_made";
-    const isCancel = type === "cancel" || type === "order_cancelled";
-    const isSale = type === "sale" || type === "successful";
-
-    if (isOffer) offerCount++;
-    else if (isCancel) cancelCount++;
-    else if (isSale) saleCount++;
-
-    // Only track timestamps + collections for bidding-related activity —
-    // transfers/mints inflate the rate without reflecting bot behaviour.
-    if (isOffer || isCancel) {
-      if (slug) collections.add(slug);
-      const ts = e.event_timestamp || e.created_date || e.closing_date;
-      if (ts) {
-        const t = typeof ts === "number" ? ts * 1000 : new Date(ts).getTime();
-        if (!isNaN(t)) timestamps.push(t);
-      }
-    }
-  }
-
-  // Need at least a few datapoints before rate signals are meaningful.
-  timestamps.sort((a, b) => a - b);
-  const spanMs = timestamps.length >= 2
-    ? timestamps[timestamps.length - 1] - timestamps[0]
-    : 0;
-  // Guard: if the span is 0 (all same timestamp = batch op) treat as 1 minute
-  // so we don't divide by zero. A burst of 50 simultaneous orders still
-  // yields a huge rate, which is the right signal.
-  const spanHours = Math.max(spanMs / 3_600_000, 1 / 60);
-
-  const eventsPerHour = timestamps.length >= 5 ? timestamps.length / spanHours : 0;
-  const collectionsPerHour = timestamps.length >= 5 ? collections.size / spanHours : 0;
-
-  // Median inter-event gap in seconds.
-  let medianGapSec = Infinity;
-  if (timestamps.length >= 5) {
-    const gaps = [];
-    for (let i = 1; i < timestamps.length; i++) {
-      gaps.push((timestamps[i] - timestamps[i - 1]) / 1000);
-    }
-    gaps.sort((a, b) => a - b);
-    medianGapSec = gaps[Math.floor(gaps.length / 2)];
-  }
-
-  let score = 0;
-
-  // Activity rate — the strongest single signal. >100/hr = clearly automated.
-  if (eventsPerHour > 100) score += 35;
-  else if (eventsPerHour > 30) score += 25;
-  else if (eventsPerHour > 10) score += 12;
-  else if (eventsPerHour > 3) score += 4;
-
-  // Inter-event cadence — humans don't click every few seconds for hours.
-  if (medianGapSec < 5) score += 25;
-  else if (medianGapSec < 20) score += 15;
-  else if (medianGapSec < 60) score += 8;
-
-  // Collection sprawl per hour — Dan4Play's signature: multiple unrelated
-  // collections per minute. Only meaningful if we actually have spread.
-  if (collections.size >= 3) {
-    if (collectionsPerHour > 20) score += 20;
-    else if (collectionsPerHour > 8) score += 14;
-    else if (collectionsPerHour > 3) score += 7;
-  }
-
-  // Cancel ratio — bots cancel-and-replace as the floor moves.
-  const cancelRatio = cancelCount / Math.max(offerCount, 1);
-  if (cancelRatio > 0.7) score += 10;
-  else if (cancelRatio > 0.4) score += 5;
-
-  // Buy-through gap — heavy bidder that never actually buys.
-  if (offerCount > 15 && saleCount === 0) score += 10;
-  else if (offerCount > 15 && saleCount / offerCount < 0.05) score += 5;
-
-  return Math.min(score, 100);
-}
+// computeBotScore lives in scoring.js — destructured at the top of this file.
 
 function setStatus(text, type) {
   statusEl.textContent = text;
   statusEl.className = type ? "status-" + type : "";
+}
+
+// ─── Floor Health panel ───────────────────────────────────────────────────────
+// Behind a "Check the floor" button so a seller checking a single token's
+// offers doesn't pay for ~30+ OpenSea calls they didn't ask for. Backend
+// already dedupes by tokenId and trims to 10; this function renders, runs
+// enrichment via the existing makerCache (so a lister that's also bidding on
+// the seller's token gets scored once), and flags wallet concentration.
+async function loadFloor() {
+  floorBtn.disabled = true;
+  floorStatusEl.hidden = false;
+  floorStatusEl.textContent = "Fetching floor…";
+  try {
+    const data = await fetchJson("/api/floor");
+    const listings = data.listings || [];
+    // Successful response — demote the primed CTA to the standard refresh
+    // affordance and drop the empty-state hint. Done before the empty-array
+    // early-return so "no listings found" still counts as a completed action.
+    demoteFloorCta();
+    if (!listings.length) {
+      floorStatusEl.textContent = "No active listings found.";
+      floorTableEl.hidden = true;
+      floorBannerEl.hidden = true;
+      return;
+    }
+    renderFloorRows(listings);
+    renderConcentrationBanner(listings);
+    floorTableEl.hidden = false;
+    floorStatusEl.textContent = `Enriching ${new Set(listings.map(l => l.makerAddress).filter(Boolean)).size} listers…`;
+    // Reuse the offers-side enrichment — same maker cache, so a wallet that
+    // also bid on the current token only pays one round of API calls.
+    const seen = new Set();
+    const tasks = [];
+    for (const l of listings) {
+      const addr = l.makerAddress;
+      if (!addr) continue;
+      const key = addr.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      tasks.push(enrichMaker(addr));
+    }
+    await Promise.all(tasks);
+    floorStatusEl.textContent = "Done.";
+  } catch (err) {
+    console.error(err);
+    floorStatusEl.textContent = "Error: " + err.message;
+  } finally {
+    floorBtn.disabled = false;
+  }
+}
+
+// One-shot transition from the prominent "Check the floor" CTA to the muted
+// "Refresh" button. Delegates the DOM mutation to NormiesUi.demoteCta (shared
+// helper, unit-tested) and persists the demotion so the user isn't re-prompted
+// on their next visit. Returns void; idempotent via the helper's primed-class
+// guard.
+function demoteFloorCta() {
+  const changed = NormiesUi.demoteCta(floorBtn, {
+    primedClass: "floor-cta",
+    demotedClass: "refresh-btn",
+    text: "Refresh",
+    title: "Re-fetch the 10 cheapest listings (cached for 60s on the server).",
+    hideEl: floorEmptyEl,
+  });
+  if (changed) NormiesUi.writeDemoted(window.localStorage, FLOOR_DEMOTED_KEY);
+}
+
+// Sibling for the primary Fetch button. No demotedClass — the default
+// .controls button style already renders the right look once .fetch-cta is
+// stripped (the pulse is the only thing the primed class adds).
+function demoteFetchCta() {
+  const changed = NormiesUi.demoteCta(fetchBtn, { primedClass: "fetch-cta" });
+  if (changed) NormiesUi.writeDemoted(window.localStorage, FETCH_DEMOTED_KEY);
+}
+
+function renderFloorRows(listings) {
+  floorBodyEl.innerHTML = "";
+  listings.forEach((l, i) => {
+    const rank = i + 1;
+    const price = formatPrice(l.priceWei, l.decimals);
+    const perUnit = Number(l.priceWei) / Math.pow(10, l.decimals || 18);
+    const usd = ethUsdPrice ? perUnit * ethUsdPrice : null;
+    const usdCell = usd != null ? `<span class="usd">($${formatUsd(usd)})</span>` : "";
+    const durSec = Number(l.durationSec) || 0;
+    const durCell = `<span class="dur ${durationClass(durSec)}" title="${escapeHtml(durationTitle(durSec))}">${formatDuration(durSec)}</span>`;
+    const lister = l.makerAddress || "";
+    const listerShort = lister ? `${lister.slice(0, 6)}…${lister.slice(-4)}` : "—";
+    // Thumbnail + token id. The image is server-enriched from the shared
+    // nftMetaCache; if missing or broken we fall back to the inline SVG
+    // placeholder so the row layout stays stable (no shifting once images
+    // resolve). onerror clears itself after swapping to avoid a loop if the
+    // placeholder itself ever fails to decode.
+    const imgSrc = l.image || NFT_PLACEHOLDER;
+    const imgAlt = escapeHtml(l.name || (l.tokenId ? `Normie #${l.tokenId}` : "Normie"));
+    const thumb = `<img class="floor-thumb" src="${imgSrc}" alt="${imgAlt}" onerror="this.onerror=null;this.src='${NFT_PLACEHOLDER}'" />`;
+    const tokenLink = l.tokenId
+      ? `<a href="https://opensea.io/item/ethereum/${NORMIES_CONTRACT}/${l.tokenId}" target="_blank" rel="noopener" title="${imgAlt}">${thumb}<span class="tid">#${l.tokenId}</span></a>`
+      : "—";
+    const tr = document.createElement("tr");
+    // Tag with data-maker so applyMakerEnrichment's document-wide selector
+    // paints this row too. Deliberately NOT setting data-duration-sec —
+    // listing lifetime ≠ bid expiry; the bid-duration bonus shouldn't apply.
+    if (lister) tr.dataset.maker = lister.toLowerCase();
+    tr.innerHTML = `
+      <td>${rank}</td>
+      <td class="token-cell">${tokenLink}</td>
+      <td class="num">
+        <div class="price-main">${price} ${l.currency || "ETH"}</div>
+        <div class="price-sub">${usdCell}</div>
+      </td>
+      <td class="duration">${durCell}</td>
+      <td class="maker">${lister
+        ? `<a href="https://opensea.io/${lister}" target="_blank" rel="noopener">
+             <span class="maker-name">${listerShort}</span>
+           </a>`
+        : "—"}</td>
+      <td class="num holds">…</td>
+      <td class="num burns">…</td>
+      <td class="num bot-score">…</td>
+    `;
+    floorBodyEl.appendChild(tr);
+  });
+}
+
+// Flag wallet concentration on the floor — if a single wallet holds ≥3 of
+// the 10 cheapest listings, that's a classic floor-wall pattern (one seller
+// stacking the floor to suppress price or create a fake support level).
+function renderConcentrationBanner(listings) {
+  const stacked = findConcentratedListers(listings, 3);
+  if (!stacked.length) {
+    floorBannerEl.hidden = true;
+    floorBannerEl.innerHTML = "";
+    return;
+  }
+  const parts = stacked.map(([addr, n]) => {
+    const short = `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+    return `<a href="https://opensea.io/${addr}" target="_blank" rel="noopener"><strong>${short}</strong></a> (${n} listings)`;
+  });
+  floorBannerEl.innerHTML =
+    `⚠ Floor concentration detected: ${parts.join(", ")} — one wallet stacking ` +
+    `multiple of the cheapest listings can suppress price or create a fake support wall.`;
+  floorBannerEl.hidden = false;
 }

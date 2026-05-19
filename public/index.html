@@ -166,8 +166,44 @@
     .cta-note { color: var(--text); font-size: 13px; margin: 12px 0 6px 0; }
     .cta-steps { color: var(--muted); font-size: 13px; margin: 0; padding-left: 22px; line-height: 1.6; }
     .cta-steps strong, .cta-steps em { color: var(--text); font-style: normal; }
-    /* Bot-score cell: number + risk label on one line */
+    /* Bot-score cell: number + risk label on one line, with a per-signal
+       breakdown bar underneath so the seller can see WHICH signal fired. */
     .bot-score .label { font-weight: 500; font-size: 11px; margin-left: 6px; opacity: 0.85; }
+    .bot-score .score-head { line-height: 1.2; }
+    /* Mini bar — 6 segments side by side, each width proportional to that
+       signal's max points. Inner fill = points actually scored, coloured
+       green→red by ratio. Empty segments stay dark so unfired signals are
+       visibly distinguishable from low-fired ones. */
+    .score-bar {
+      display: flex;
+      gap: 1px;
+      margin-top: 4px;
+      width: 120px;
+      height: 6px;
+      border-radius: 2px;
+      overflow: hidden;
+      cursor: help;
+    }
+    .score-bar .seg {
+      background: var(--panel-2);
+      height: 100%;
+      position: relative;
+      overflow: hidden;
+    }
+    .score-bar .seg-fill { height: 100%; transition: width 0.15s; }
+    /* Offer duration cell — small pill, coloured by how short the expiry is.
+       Short (<1h) = bot fingerprint; mid (<24h) = unusual; long = typical. */
+    .duration .dur {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+      cursor: help;
+    }
+    .dur-long  { color: var(--muted); }
+    .dur-mid   { color: var(--risk-med); background: rgba(210, 153, 34, 0.12); }
+    .dur-short { color: var(--risk-high); background: rgba(248, 81, 73, 0.14); font-weight: 600; }
     /* Maker cell: OpenSea username stacked on top of short address */
     .maker a { display: inline-block; line-height: 1.2; }
     .maker-name { display: block; font-weight: 600; color: var(--accent-2); }
@@ -241,21 +277,203 @@
     .legend .l-low { background: var(--risk-low); }
     .legend .l-med { background: var(--risk-med); }
     .legend .l-high { background: var(--risk-high); }
+    /* Sort dropdown + filter checkbox, sit alongside the existing controls */
+    .controls select {
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .controls select:focus { outline: none; border-color: var(--accent); }
+    .view-controls {
+      display: inline-flex;
+      gap: 10px;
+      align-items: center;
+      margin-left: auto;
+    }
+    .view-controls label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+    /* Reset the 160px width that .controls input applies to every input —
+       the checkbox needs to sit flush against its label, not float at the
+       left edge of a 160px-wide slot. */
+    .view-controls input[type=checkbox] { width: auto; accent-color: var(--accent); cursor: pointer; padding: 0; margin: 0; }
+    /* Floor Health panel — separate section under the offer table. Same table
+       styling reused; an optional concentration banner sits above it for the
+       case where one wallet owns multiple of the 10 cheapest listings. */
+    .floor-section { margin-top: 28px; }
+    .floor-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    /* Allow the header row to wrap so the (now-prominent) CTA button drops
+       to its own line on narrow viewports rather than squeezing the subtitle
+       or overflowing the column. */
+    .floor-header { flex-wrap: wrap; }
+    .floor-header h2 { margin: 0; font-size: 18px; flex-shrink: 0; }
+    .floor-header .floor-sub { color: var(--muted); font-size: 13px; flex: 1; }
+    .floor-banner {
+      background: rgba(210, 153, 34, 0.12);
+      border: 1px solid var(--risk-med);
+      color: var(--risk-med);
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      margin-bottom: 12px;
+    }
+    .floor-banner strong { color: var(--text); }
+    @keyframes floorPulse { 0% { box-shadow: 0 0 0 0 rgba(124,92,255,0.55); } 70% { box-shadow: 0 0 0 10px rgba(124,92,255,0); } 100% { box-shadow: 0 0 0 0 rgba(124,92,255,0); } }
+    .floor-empty { background: var(--panel); border: 1px dashed var(--border); border-radius: 8px; padding: 18px 20px; color: var(--muted); font-size: 13px; line-height: 1.5; margin: 0; text-align: center; }
+    .floor-empty strong { color: var(--text); }
+    .floor-cta:hover { background: var(--accent-2); }
+    .floor-cta:disabled { opacity: 0.7; cursor: progress; animation: none; }
+    /* Small NFT thumbnail in each floor row so the seller can eyeball which
+       Normie a listing refers to without clicking through. 36px keeps the
+       row compact and the table density consistent with the offers side. */
+    .floor-thumb {
+      width: 36px;
+      height: 36px;
+      border-radius: 6px;
+      object-fit: cover;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      vertical-align: middle;
+      display: block;
+    }
+    .token-cell a { display: inline-flex; align-items: center; gap: 8px; }
+    .token-cell .tid { font-weight: 600; }
+
+    /* Two-column layout for Offers + Floor on wide viewports. Below the
+       breakpoint the columns stack (current behaviour); at ≥1400px the offers
+       table and the floor section sit side-by-side so the seller can compare
+       bids against the floor without scrolling. Each column gets its own
+       horizontal scroll so a slightly narrow column doesn't force the whole
+       page to scroll. min-width: 0 is the standard fix for grid children that
+       contain wide tables — without it the column refuses to shrink. */
+    .tables-grid { display: block; }
+    .tables-grid > .col { min-width: 0; overflow-x: auto; }
+    .tables-grid > .col > table { width: 100%; }
+    @media (min-width: 1400px) {
+      .tables-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 20px;
+        align-items: start;
+      }
+      /* Floor section already has its own top margin for the stacked layout;
+         drop it in side-by-side mode so both columns align at the top. */
+      .tables-grid .floor-section { margin-top: 0; }
+    }
+
+    /* ─── Light theme ───────────────────────────────────────────────────────
+       Every painted surface in this stylesheet already pulls from the CSS
+       variables defined in :root, so a light theme is just a re-definition
+       of those variables under a [data-theme="light"] selector. The two
+       exceptions are the type badges (which hardcode pale text for visibility
+       on the dark panel) and the score-info table border — both overridden
+       below so light mode hits readable contrast. */
+    [data-theme="light"] {
+      --bg: #f7f8fa;
+      --panel: #ffffff;
+      --panel-2: #eef0f4;
+      --border: #d8dce4;
+      --text: #1a1d24;
+      --muted: #5b6471;
+      --accent: #6541e6;
+      --accent-2: #2f6bd6;
+      --risk-low: #1a7f33;
+      --risk-med: #a8761a;
+      --risk-high: #c93030;
+    }
+    [data-theme="light"] .badge-item { color: #5840d6; background: rgba(124, 92, 255, 0.12); }
+    [data-theme="light"] .badge-collection { color: #2c61c4; background: rgba(91, 141, 239, 0.12); }
+    [data-theme="light"] .badge-trait { color: #8a4f1c; background: rgba(244, 162, 97, 0.18); }
+    [data-theme="light"] .cta-button { color: #ffffff !important; }
+    /* Light-theme accent halo for the floor CTA pulse — the dark-theme rgba
+       baked into the keyframes is purple-tinted, which still reads on white
+       but loses contrast. Override the animation with a darker-purple halo
+       that matches the light --accent. */
+    [data-theme="light"] .floor-cta { animation-name: floorPulseLight; }
+    @keyframes floorPulseLight {
+      0%   { box-shadow: 0 0 0 0    rgba(101, 65, 230, 0.55); }
+      70%  { box-shadow: 0 0 0 10px rgba(101, 65, 230, 0);    }
+      100% { box-shadow: 0 0 0 0    rgba(101, 65, 230, 0);    }
+    }
+
+    /* Header is now a flex row so the theme toggle can sit on the right
+       without disturbing the title block. */
+    header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .theme-toggle {
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 16px;
+      line-height: 1;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .theme-toggle:hover { border-color: var(--accent); }
+    .floor-cta { background: var(--accent); color: white; border: none; border-radius: 6px; padding: 8px 16px; font-size: 14px; font-weight: 600; cursor: pointer; animation: floorPulse 2.2s ease-in-out infinite; }
+    /* Same pulse halo applied to the primary Fetch button when no token has
+       ever been fetched in this browser (tracked via localStorage). Drops the
+       moment the first successful fetch lands, so returning users see the
+       calm default style. Reuses the floor keyframes — same accent halo. */
+    .fetch-cta { animation: floorPulse 2.2s ease-in-out infinite; }
+    .fetch-cta:disabled { animation: none; }
+    [data-theme="light"] .fetch-cta { animation-name: floorPulseLight; }
   </style>
+  <script>
+    /* Apply the saved (or system-preferred) theme before first paint to avoid
+       a flash of the wrong theme. Runs synchronously in <head> on purpose. */
+    (() => {
+      try {
+        const stored = localStorage.getItem("theme");
+        const prefersLight = window.matchMedia &&
+          window.matchMedia("(prefers-color-scheme: light)").matches;
+        document.documentElement.dataset.theme =
+          stored || (prefersLight ? "light" : "dark");
+      } catch (_) { /* private mode, etc. — fall back to default dark */ }
+    })();
+  </script>
 </head>
 <body>
   <header>
-    <h1>Normies Offer Desk</h1>
-    <p class="subtitle">Sell your Normie to a real collector, not a bot. This tool surfaces the highest bids and flags which ones come from suspicious wallets — so the NORMIE you sell lands in the hands of someone who actually wants to hold it.</p>
+    <div>
+      <h1>Normies Offer Desk</h1>
+      <p class="subtitle">Sell your Normie to a real collector, not a bot. This tool surfaces the highest bids and flags which ones come from suspicious wallets — so the NORMIE you sell lands in the hands of someone who actually wants to hold it.</p>
+    </div>
+    <button type="button" id="themeToggle" class="theme-toggle" title="Toggle light / dark theme" aria-label="Toggle theme">☀</button>
   </header>
 
   <section class="controls">
     <label for="tokenId">Normie token ID</label>
     <input type="number" id="tokenId" placeholder="e.g. 1234" min="0" />
-    <button id="fetchBtn">Fetch offers</button>
-    <button id="refreshBtn" class="refresh-btn" hidden title="Re-fetch offers and re-check makers (uses cached enrichment for makers seen in the last 5 minutes)">Refresh</button>
+    <button type="button" id="fetchBtn" class="fetch-cta">Fetch offers</button>
+    <button type="button" id="refreshBtn" class="refresh-btn" hidden title="Re-fetch offers and re-check makers (uses cached enrichment for makers seen in the last 5 minutes)">Refresh</button>
     <span id="freshness" class="freshness" hidden></span>
     <span id="status"></span>
+    <div class="view-controls">
+      <label for="sortMode" title="Sort the offers table by per-unit price (default) or by adjusted bot score ascending — safest bidders first.">Sort:
+        <select id="sortMode">
+          <option value="price">Price (high → low)</option>
+          <option value="safest">Safest first</option>
+        </select>
+      </label>
+      <label title="Hide rows whose adjusted bot score is 70 or higher. Unscored rows (still loading) stay visible.">
+        <input type="checkbox" id="hideBots" />
+        Hide bot-like (≥70)
+      </label>
+    </div>
   </section>
 
   <div id="nftCard" class="nft-card" hidden>
@@ -283,20 +501,54 @@
 
   <div id="summary" class="summary"></div>
 
-  <table id="offerTable" hidden>
-    <thead>
-      <tr>
-        <th>#</th>
-        <th>Price</th>
-        <th>Type</th>
-        <th>Maker</th>
-        <th>Normies held</th>
-        <th>Burns</th>
-        <th title="Heuristic 0–100 from OpenSea activity. Lower = more human-like.">Bot score</th>
-      </tr>
-    </thead>
-    <tbody id="offerBody"></tbody>
-  </table>
+  <div class="tables-grid">
+    <div class="col">
+      <table id="offerTable" hidden>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Price</th>
+            <th>Type</th>
+            <th title="How long this specific offer is valid for. Very short expirations (<1h) are a classic bot fingerprint — re-pricing as the floor moves rather than leaving long open exposure.">Duration</th>
+            <th>Maker</th>
+            <th>Normies held</th>
+            <th>Burns</th>
+            <th title="Heuristic 0–100 from OpenSea activity + this offer's expiry. Lower = more human-like. Hover the bar below the number to see which signal fired.">Bot score</th>
+          </tr>
+        </thead>
+        <tbody id="offerBody"></tbody>
+      </table>
+    </div>
+    <div class="col">
+      <section class="floor-section">
+        <div class="floor-header">
+          <h2>Floor Health</h2>
+          <span class="floor-sub">The 10 cheapest active Normies listings — scored with the same bot logic to spot floor-manipulation walls.</span>
+          <button type="button" id="floorBtn" class="floor-cta">Check the floor</button>
+          <span id="floorStatus" class="freshness" hidden></span>
+        </div>
+        <p id="floorEmpty" class="floor-empty">
+          Click <strong>Check the floor</strong> above to load the 10 cheapest active listings and scan for floor-manipulation walls. Uses ~10 OpenSea calls and is cached for 60 seconds.
+        </p>
+        <div id="floorBanner" class="floor-banner" hidden></div>
+        <table id="floorTable" hidden>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Token</th>
+              <th>Price</th>
+              <th title="Listing lifetime (endTime − startTime). Very short listings are unusual for human sellers.">Duration</th>
+              <th>Lister</th>
+              <th>Normies held</th>
+              <th>Burns</th>
+              <th title="Same bot score as the offers table — derived from the lister's recent OpenSea activity.">Bot score</th>
+            </tr>
+          </thead>
+          <tbody id="floorBody"></tbody>
+        </table>
+      </section>
+    </div>
+  </div>
 
   <details class="score-info">
     <summary>About the Bot score — how it's calculated</summary>
@@ -312,6 +564,7 @@
     </div>
 
     <p><strong>Signals we weight</strong></p>
+    <p>The mini bar under each score shows these six segments left-to-right; segment fill goes green→red as that signal contributes more of its maximum.</p>
     <table>
       <thead><tr><th>Signal</th><th>What it measures</th><th>Max points</th></tr></thead>
       <tbody>
@@ -320,6 +573,7 @@
         <tr><td>Collection sprawl per hour</td><td>Unique collections touched per hour. Mass-bidders fire at 10+ unrelated collections per hour — Dan4Play's signature.</td><td>+20</td></tr>
         <tr><td>Cancel ratio</td><td>Cancels / offers. Bots cancel-and-replace as the floor moves; humans rarely revise more than they place.</td><td>+10</td></tr>
         <tr><td>No purchases despite heavy bidding</td><td>15+ offers and zero (or &lt;5%) sales = "fishing" wallet hoping for a careless accept rather than collecting.</td><td>+10</td></tr>
+        <tr><td>Short expiry (this bid)</td><td>This specific offer's lifetime (endTime − startTime). &lt;5min = +10, &lt;30min = +7, &lt;2h = +4, &lt;6h = +1. Programmatic bidders use short expirations so they can re-price as the floor moves rather than leaving long open exposure; humans take OpenSea's 7d/30d defaults. This is the only per-offer signal — the same maker can show different scores on different rows.</td><td>+10</td></tr>
       </tbody>
     </table>
 
@@ -347,6 +601,8 @@
     Showing the top 10 offers ranked by per-unit price. Bulk bids appear as <code>price × quantity</code> and rank by the per-unit value (matching OpenSea's UI).
   </p>
 
+  <script src="scoring.js"></script>
+  <script src="ui-helpers.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
