@@ -604,5 +604,9 @@
   <script src="scoring.js"></script>
   <script src="ui-helpers.js"></script>
   <script src="app.js"></script>
+  <script type="module">
+    import { inject } from 'https://cdn.jsdelivr.net/npm/@vercel/analytics@1/dist/index.js';
+    inject();
+  </script>
 </body>
 </html>
