@@ -9,7 +9,6 @@
     "test": "node --test tests/server.test.js tests/scoring.test.js tests/ui-helpers.test.js"
   },
   "dependencies": {
-    "@vercel/analytics": "^2.0.1",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "node-fetch": "^2.7.0"

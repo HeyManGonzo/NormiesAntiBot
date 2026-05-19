@@ -604,9 +604,14 @@
   <script src="scoring.js"></script>
   <script src="ui-helpers.js"></script>
   <script src="app.js"></script>
-  <script type="module">
-    import { inject } from 'https://cdn.jsdelivr.net/npm/@vercel/analytics@1/dist/index.js';
-    inject();
+  <!-- Vercel Web Analytics — vanilla HTML snippet per Vercel's quickstart docs.
+       The first script defines window.va as a queue stub so calls made before
+       the loader arrives aren't lost; the second pulls the production loader
+       from Vercel's auto-served path (only resolves once Web Analytics is
+       enabled in the project dashboard — 404s locally, which is expected). -->
+  <script>
+    window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };
   </script>
+  <script defer src="/_vercel/insights/script.js"></script>
 </body>
 </html>
