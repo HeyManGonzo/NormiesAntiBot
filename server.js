@@ -412,7 +412,7 @@ app.get("/api/floor", async (_req, res) => {
 // exported below — starting a real listener would bind a port and leak it.
 if (require.main === module) {
   app.listen(PORT, () => {
-    console.log(`\n  Normies Offer Desk running at http://localhost:${PORT}`);
+    console.log(`\n  Normies Bot Filter running at http://localhost:${PORT}`);
     if (!OPENSEA_API_KEY) {
       console.warn("  ⚠  OPENSEA_API_KEY is not set — add it to your .env file\n");
     } else {

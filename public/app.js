@@ -1,4 +1,4 @@
-// Normies Offer Desk — frontend logic.
+// Normies Bot Filter — frontend logic.
 // Fetches offers for a given Normie token ID, then enriches the top 5 unique
 // makers with OpenSea activity (for bot scoring) and Normies API holdings/burns.
 

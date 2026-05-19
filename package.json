@@ -1,5 +1,5 @@
 {
-  "name": "normies-offer-desk",
+  "name": "normies-bot-filter",
   "version": "1.0.0",
   "description": "OpenSea collection offer browser with bot scoring for the Normies collection.",
   "main": "server.js",

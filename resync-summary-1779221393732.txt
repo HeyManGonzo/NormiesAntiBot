@@ -1,0 +1,51 @@
+package.json name:      normies-bot-filter
+package-lock root name: normies-bot-filter
+package-lock packages[""]: {
+  "name": "normies-bot-filter",
+  "version": "1.0.0",
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "node-fetch": "^2.7.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.4"
+  }
+}
+
+=== resync.log ===
+=== npm pkg set name=normies-bot-filter (exit 0) ===
+
+
+=== npm install (exit 0) ===
+
+up to date, audited 102 packages in 2s
+
+21 packages are looking for funding
+  run `npm fund` for details
+
+found 0 vulnerabilities
+
+
+=== node --test tests/server.test.js tests/scoring.test.js tests/ui-helpers.test.js (exit 0) ===
+# Subtest: writeDemoted: swallows errors so the caller doesn't have to try/catch
+ok 39 - writeDemoted: swallows errors so the caller doesn't have to try/catch
+  ---
+  duration_ms: 0.2878
+  ...
+# Subtest: readDemoted/writeDemoted: tolerate a null storage (SSR-style absence)
+ok 40 - readDemoted/writeDemoted: tolerate a null storage (SSR-style absence)
+  ---
+  duration_ms: 0.3335
+  ...
+1..40
+# tests 40
+# suites 0
+# pass 40
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 216.773
+
+
